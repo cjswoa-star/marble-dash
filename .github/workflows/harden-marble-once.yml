@@ -10,36 +10,46 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Add CSP guard and rebuild single-file bundle
+      - name: Restore clean V11.1 source
+        shell: bash
+        run: |
+          git fetch origin 24bb08ce33931b72683434b97b6b573da2ec8b94 --depth=1
+          git show 24bb08ce33931b72683434b97b6b573da2ec8b94:index.html > /tmp/v11_1.html
+      - name: Build readable V11.3 single HTML
         shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
-          import re, base64, gzip
-          p=Path('index.html')
-          s=p.read_text('utf-8')
-          m=re.search(r"const s=\[(.*?)\]\.join\(''\);",s,re.S)
-          if not m:
-              raise SystemExit('compressed payload not found')
-          payload=''.join(re.findall(r"'([^']*)'",m.group(1)))
-          src=gzip.decompress(base64.b64decode(payload)).decode('utf-8')
+          import re
+          src=Path('/tmp/v11_1.html').read_text('utf-8')
           src=re.sub(r'<script[^>]+src=["\'](?:https?:)?//lc\.getunicorn\.org[^>]*></script>\s*','',src,flags=re.I)
           csp='''<meta http-equiv="Content-Security-Policy" content="default-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none';">'''
           if 'Content-Security-Policy' not in src:
               vp='<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />'
+              if vp not in src: raise SystemExit('viewport marker missing')
               src=src.replace(vp,vp+'\n'+csp,1)
-          b64=base64.b64encode(gzip.compress(src.encode('utf-8'),compresslevel=9,mtime=0)).decode()
-          parts=[b64[i:i+8000] for i in range(0,len(b64),8000)]
-          wrapper='<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'+csp+'<title>구슬레이스</title></head><body><script>(async()=>{const s=[\n'+',\n'.join(repr(x) for x in parts)+"\n].join('');const b=Uint8Array.from(atob(s),c=>c.charCodeAt(0));const ds=new DecompressionStream(\"gzip\");const t=await new Response(new Blob([b]).stream().pipeThrough(ds)).text();document.open();document.write(t);document.close()})().catch(e=>{document.body.innerHTML='<pre style=\"color:white;background:#111;padding:20px\">'+e+'</pre>'});</script></body></html>"
-          p.write_text(wrapper,'utf-8')
+          def once(old,new,label):
+              global src
+              if old not in src: raise SystemExit(label+' marker missing')
+              src=src.replace(old,new,1)
+          if 'tailAssist=allWinnerMode' not in src:
+              old="if(!running||paused||finished)return;raceTime+=dt;leaderSwapCooldown=Math.max(0,leaderSwapCooldown-dt);const timeScale=finalMode?updateFinale():(slowmo?.48:1);dt*=timeScale;"
+              once(old,old+"\n const allWinnerMode=getWinnerCount()===marbles.length,tailAssist=allWinnerMode&&raceTime>20&&winners.length>=Math.ceil(marbles.length*.65),tailPower=tailAssist?clamp((raceTime-20)/16,0,1):0;",'tail header')
+              once("applyZones(m,dt);m.vy+=(selectedMap==='chaos'?1060:980)*dt;m.vx*=","applyZones(m,dt);m.vy+=(selectedMap==='chaos'?1060:980)*dt;if(tailAssist)m.vy+=(180+360*tailPower)*dt;m.vx*=",'tail gravity')
+              once("}else{m.stuckT+=dt;if(m.stuckT>2.15){m.rescueCount=(m.rescueCount||0)+1;if(m.rescueCount>=3){m.y+=72;","}else{m.stuckT+=dt;const rescueAfter=tailAssist?1.35:2.15;if(m.stuckT>rescueAfter){m.rescueCount=(m.rescueCount||0)+1;const rescueLimit=tailAssist?2:3;if(m.rescueCount>=rescueLimit){m.y+=tailAssist?88:72;",'tail rescue')
+              once("m.vy=560;m.vx+=rnd(-300,300);","m.vy=tailAssist?720:560;m.vx+=rnd(-300,300);",'tail rescue speed')
+              once("}else{m.vy+=500;m.vx+=rnd(-280,280);","}else{m.vy+=tailAssist?620:500;m.vx+=rnd(-280,280);",'tail soft rescue')
+          if 'getunicorn.org' in src: raise SystemExit('external script remains')
+          if 'tailAssist=allWinnerMode' not in src: raise SystemExit('tail assist missing')
+          if 'Content-Security-Policy' not in src: raise SystemExit('CSP missing')
+          Path('index.html').write_text(src,'utf-8')
+          print('V11.3 bytes',len(src.encode('utf-8')))
           PY
-      - name: Commit hardened index
+      - name: Commit V11.3
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add index.html
-          if ! git diff --cached --quiet; then
-            git commit -m "Harden V11.3 against external scripts"
-            git push
-          fi
+          git commit -m "Deploy readable V11.3 hardened build"
+          git push
